@@ -1,4 +1,4 @@
-import pymysql  # Changed from pyodbc to pymysql for MySQL
+import pymysql
 import re
 import os
 from dotenv import load_dotenv
@@ -22,16 +22,31 @@ def get_db_schema(cursor):
 
     # Fetch all tables in the current database
     cursor.execute("SHOW TABLES")
-    tables = [row[0] for row in cursor.fetchall()]
+    
+    # Handle both DictCursor and regular cursor cases
+    try:
+        # For DictCursor (keys are column names)
+        tables = [row["Tables_in_" + os.getenv('MYSQL_DATABASE', 'SchoolDb')] for row in cursor.fetchall()]
+    except KeyError:
+        # For regular cursor (numeric indices)
+        cursor.execute("SHOW TABLES")
+        tables = [row[0] for row in cursor.fetchall()]
 
     # For each table, fetch its columns and their data types
     for table in tables:
-        cursor.execute(f"SHOW COLUMNS FROM {table}")
+        cursor.execute(f"SHOW COLUMNS FROM `{table}`")  # Added backticks for safety
         columns = cursor.fetchall()
         schema += f"Table: {table}\n"
+        
+        # Handle both DictCursor and regular cursor for columns
         for column in columns:
-            column_name = column[0]
-            data_type = column[1]
+            if isinstance(column, dict):  # DictCursor case
+                column_name = column["Field"]
+                data_type = column["Type"]
+            else:  # Regular cursor case
+                column_name = column[0]
+                data_type = column[1]
+                
             schema += f"- {column_name} ({data_type})\n"
         schema += "\n"
     return schema.strip()
@@ -108,14 +123,14 @@ def extract_valid_sql(text):
 # 🚀 MAIN SCRIPT
 # ------------------------
 
-# Step 0: Connect to MySQL (updated connection parameters)
+# Step 0: Connect to MySQL (credentials now from .env)
 try:
     conn = pymysql.connect(
-        host='localhost',
-        port=3306,
-        user='markvp',
-        password='12345',
-        database='SchoolDb',
+        host=os.getenv('MYSQL_HOST', 'localhost'),
+        port=int(os.getenv('MYSQL_PORT', '3306')),
+        user=os.getenv('MYSQL_USER', 'root'),
+        password=os.getenv('MYSQL_PASSWORD'),
+        database=os.getenv('MYSQL_DATABASE', 'SchoolDb'),
         charset='utf8mb4',
         cursorclass=pymysql.cursors.DictCursor
     )
@@ -132,7 +147,7 @@ if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY not found. Please set it in your .env file.")
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-ANTHROPIC_MODEL = "claude-3-opus-20240229" 
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-opus-20240229")
 print(f"Anthropic client initialized with model: {ANTHROPIC_MODEL}")
 
 # Step 2: User question
