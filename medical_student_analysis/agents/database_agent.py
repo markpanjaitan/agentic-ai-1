@@ -46,12 +46,33 @@ class DatabaseAgent:
         
         tables = []
         fetched_tables = self.cursor.fetchall()
+        
         if fetched_tables:
             db_name = self.db_config.get('database', 'SchoolDb')
+            
+            # --- DEBUGGING: Print the first row to see its structure ---
+            print(f"DatabaseAgent: Debugging fetched_tables[0]: {fetched_tables[0]}")
+            # --- END DEBUGGING ---
+
             if isinstance(fetched_tables[0], dict):
-                tables = [row["Tables_in_" + db_name] for row in fetched_tables]
-            else:
+                # Attempt to find the correct key for the table name
+                table_key = None
+                for key in fetched_tables[0]:
+                    if key.lower().startswith('tables_in_') or key.lower() == 'table':
+                        table_key = key
+                        break
+                
+                if table_key:
+                    tables = [row[table_key] for row in fetched_tables]
+                else:
+                    print("DatabaseAgent: Warning: Could not determine the table name key from dictionary. Available keys:", fetched_tables[0].keys())
+                    return None
+            else: # Assume it's a list of tuples
                 tables = [row[0] for row in fetched_tables]
+
+        if not tables:
+            print("DatabaseAgent: No tables found or failed to extract table names.")
+            return None
 
         for table in tables:
             self.cursor.execute(f"SHOW COLUMNS FROM `{table}`")
