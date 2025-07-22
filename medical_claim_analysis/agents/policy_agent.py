@@ -1,60 +1,66 @@
+# agents/policy_agent.py
 import requests
 import json
 import google.generativeai as genai
-from google.generativeai.protos import FileData # Keep this corrected import
 from typing import Dict, Any, Optional
 
 class PolicyAgent:
-    # REMOVE gemini_client from the __init__ signature
-    def __init__(self, server_url: str, gemini_model: str, auth_token: str): # <--- MODIFIED
+    def __init__(self, server_url: str, gemini_model: str, auth_token: str):
         self.server_url = server_url
         self.api_base = f"{self.server_url}/api/platform/proposal/core/proposal/v1"
         self.model = genai.GenerativeModel(gemini_model)
-        # REMOVE this line: self.gemini_client = gemini_client
-        self.auth_token = auth_token # Store the token
+        self.auth_token = auth_token
 
     def fetch_policy_data(self, composite_policy_id: str) -> Optional[Dict[str, Any]]:
         """
         Fetches policy information using the composite policyId string from the external API.
-        Includes the Authorization header with the bearer token.
         """
         endpoint = f"{self.api_base}/loadWithPlanDetail"
         params = {'policyId': composite_policy_id}
         headers = {
             'Authorization': f'Bearer {self.auth_token}',
-            'Content-Type': 'application/json' # Always good to explicitly set for JSON APIs
+            'Content-Type': 'application/json'
         }
-        print(f"PolicyAgent: Making HTTP request to {endpoint} with params {params} and auth header...")
+        
+        print(f"PolicyAgent: Making HTTP request to {endpoint} with policy ID: {composite_policy_id}")
         try:
             response = requests.get(endpoint, params=params, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except json.JSONDecodeError:
+                    print(f"PolicyAgent: Failed to parse response as JSON. Response: {response.text[:500]}...")
+                    return None
+            else:
+                print(f"PolicyAgent: API returned status {response.status_code}. Response: {response.text[:500]}...")
+                return None
         except requests.exceptions.RequestException as e:
-            print(f"PolicyAgent: Error fetching policy info from external API: {e}")
+            print(f"PolicyAgent: Request failed: {e}")
             return None
 
-    def extract_product_id_from_file(self, file_uri: str) -> Optional[str]:
+    def extract_product_id_from_json(self, json_data: dict) -> Optional[str]:
         """
-        Uses the LLM to extract the productId from an uploaded policy response file.
+        Uses the LLM to extract the productId directly from JSON data.
         """
-        if not file_uri:
-            print("PolicyAgent: No file URI provided for product ID extraction.")
+        if not json_data:
+            print("PolicyAgent: No JSON data provided for product ID extraction.")
             return None
 
-        prompt = genai.protos.Content(
-            parts=[
-                genai.protos.Part(text="Given the following JSON content from a policy API response, extract ONLY the value of the 'productId' field from the 'body' object. If 'productId' is not found or 'body' is missing, state 'NOT_FOUND'.\n\nJSON Data:"),
-                genai.protos.Part(file_data=genai.protos.FileData(file_uri=file_uri, mime_type="application/json"))
-            ]
-        )
+        prompt = f"""
+        Given the following JSON content from a policy API response, extract ONLY the value of the 'productId' field 
+        from the 'body' object. Return ONLY the productId value or 'NOT_FOUND' if it doesn't exist.
+        Do not include any additional explanation or formatting.
+
+        JSON Data:
+        {json.dumps(json_data, indent=2)}
+        """
         
-        print(f"PolicyAgent: Asking LLM to extract product ID from file URI: {file_uri}")
+        print("PolicyAgent: Asking LLM to extract product ID from JSON data...")
         try:
             response = self.model.generate_content(prompt, stream=False)
             product_id = response.text.strip()
-            if product_id == "NOT_FOUND":
-                return None
-            return product_id
+            return product_id if product_id != "NOT_FOUND" else None
         except Exception as e:
-            print(f"PolicyAgent: Error extracting product ID with LLM: {e}")
+            print(f"PolicyAgent: Error extracting product ID: {e}")
             return None
