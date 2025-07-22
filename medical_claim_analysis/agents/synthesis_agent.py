@@ -1,53 +1,65 @@
 # agents/synthesis_agent.py
 import google.generativeai as genai
 from google.generativeai.protos import FileData
-from typing import Dict, Any, Optional
+from typing import Optional
+import time # New import
+import tenacity # New import
+
+# Define a retry decorator for the LLM call
+@tenacity.retry(
+    wait=tenacity.wait_fixed(5),
+    stop=tenacity.stop_after_attempt(3),
+    retry=tenacity.retry_if_exception_type(Exception) & tenacity.retry_if_exception(
+        lambda e: "400 File" in str(e) and "not exist" in str(e)
+    ),
+    reraise=True
+)
+def _generate_content_with_retry(model, prompt):
+    """Helper function to generate content with retries."""
+    return model.generate_content(prompt, stream=False)
+
 
 class SynthesisAgent:
-    def __init__(self, model_name: str = "gemini-1.5-flash"):
-        self.model = genai.GenerativeModel(model_name)
+    def __init__(self, gemini_model: str):
+        self.model = genai.GenerativeModel(gemini_model)
 
-    def synthesize_answer_with_files(
-        self,
-        user_question: str,
-        policy_file_uri: Optional[str],
-        product_file_uri: Optional[str],
-        extracted_product_id: Optional[str],
-        is_coverage_element_covered: bool, # Renamed variable
-        target_coverage_element: str # New parameter
-    ) -> str:
-        """
-        Synthesizes a final answer based on the user's question and the results
-        derived from the file analysis by the LLM.
-        """
-        parts = [
-            genai.protos.Part(text=f"You are an intelligent assistant designed to answer questions about insurance policies and products."),
-            genai.protos.Part(text=f"The user's question is: \"{user_question}\""),
-            genai.protos.Part(text=f"Here's what I know:\n")
+    def synthesize_answer_with_files(self, 
+                                     user_question: str,
+                                     policy_file_uri: Optional[str],
+                                     product_file_uri: Optional[str],
+                                     extracted_product_id: Optional[str],
+                                     is_coverage_element_covered: bool,
+                                     target_coverage_element: str) -> str:
+        
+        prompt_parts = [
+            genai.protos.Part(text=f"Based on the following information and files, answer the user's question concisely."),
+            genai.protos.Part(text=f"User's Question: '{user_question}'"),
+            genai.protos.Part(text=f"Extracted Policy ID from question: {extracted_product_id if extracted_product_id else 'N/A'}"),
+            genai.protos.Part(text=f"Target coverage element: '{target_coverage_element}'"),
+            genai.protos.Part(text=f"LLM analysis result for coverage: {is_coverage_element_covered}"),
+            genai.protos.Part(text="\n--- Relevant Data ---\n")
         ]
 
         if policy_file_uri:
-            parts.append(genai.protos.Part(text=f"I have analyzed the policy information from the following file (policy_data.json):"))
-            parts.append(genai.protos.Part(file_data=genai.protos.FileData(file_uri=policy_file_uri, mime_type="application/json")))
+            prompt_parts.append(genai.protos.Part(text="Policy Data (uploaded file):"))
+            prompt_parts.append(genai.protos.Part(file_data=genai.protos.FileData(file_uri=policy_file_uri, mime_type="text/plain")))
         else:
-            parts.append(genai.protos.Part(text="Policy information was not available or could not be processed."))
-
-        if product_file_uri:
-            parts.append(genai.protos.Part(text=f"\nI have analyzed the product schema information from the following file (product_schema.json):"))
-            parts.append(genai.protos.Part(file_data=genai.protos.FileData(file_uri=product_file_uri, mime_type="application/json")))
-        else:
-            parts.append(genai.protos.Part(text="Product schema information was not available or could not be processed."))
-
-        parts.append(genai.protos.Part(text=f"\nFrom the policy data, the Product ID was extracted as: {extracted_product_id if extracted_product_id else 'N/A'}"))
+            prompt_parts.append(genai.protos.Part(text="Policy Data: Not available."))
         
-        # IMPORTANT: The prompt now uses the dynamic `target_coverage_element` and renamed boolean
-        parts.append(genai.protos.Part(text=f"Regarding the question about whether the policy is covered by \"{target_coverage_element}\", the analysis of the product schema indicates: {is_coverage_element_covered}"))
+        if product_file_uri:
+            prompt_parts.append(genai.protos.Part(text="Product Schema Data (uploaded file):"))
+            prompt_parts.append(genai.protos.Part(file_data=genai.protos.FileData(file_uri=product_file_uri, mime_type="text/plain")))
+        else:
+            prompt_parts.append(genai.protos.Part(text="Product Schema Data: Not available."))
 
-        parts.append(genai.protos.Part(text=f"\nBased on all the provided information, please provide a clear and concise answer to the user's original question. State definitively whether the policy is covered by \"{target_coverage_element}\" and include the Policy ID and Product ID if successfully determined."))
+        prompt_parts.append(genai.protos.Part(text="\n--- Your Answer ---"))
+        prompt_parts.append(genai.protos.Part(text="Given the policy ID and the requested coverage element, answer directly if the policy is covered by the specified product based on the provided data. If information is missing or the product ID could not be extracted, state that."))
 
         print("SynthesisAgent: Generating final answer with LLM, referencing uploaded files...")
         try:
-            response = self.model.generate_content(parts, stream=False)
-            return response.text
+            time.sleep(3) # Added wait time here
+            response = _generate_content_with_retry(self.model, prompt_parts) # Using retry helper
+            return response.text.strip()
         except Exception as e:
-            return f"SynthesisAgent: Error generating final answer: {e}"
+            print(f"SynthesisAgent: Error generating final answer: {e}")
+            return f"An error occurred while synthesizing the answer: {e}"

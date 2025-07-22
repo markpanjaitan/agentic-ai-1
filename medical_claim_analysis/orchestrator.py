@@ -1,9 +1,10 @@
+# orchestrator.py
 import os
 import json
 from dotenv import load_dotenv
 import google.generativeai as genai
-from google.generativeai.protos import FileData # Keep this corrected import
-import time # For unique filenames
+from google.generativeai.protos import FileData
+import time # For unique filenames and sleep
 import re # Import regex module for more robust extraction
 
 # Import agents
@@ -20,37 +21,35 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY not found in .env")
 genai.configure(api_key=GEMINI_API_KEY)
 
-# We no longer initialize a 'gemini_client' attribute
-# gemini_client = genai.Client(api_key=GEMINI_API_KEY) # <--- REMOVE THIS LINE
-
 def upload_to_gemini(filepath: str, mime_type: str) -> FileData:
     """Uploads a file to Gemini's Files API and returns the FileData."""
     print(f"Uploading {filepath} to Gemini Files API...")
     try:
-        # Use genai.upload_file directly
         file = genai.upload_file(
-            path=filepath, # Note: It's 'path' not 'file_path' for genai.upload_file
-            display_name=os.path.basename(filepath) # Optional: set a display name
+            path=filepath,
+            display_name=os.path.basename(filepath)
         )
         print(f"Uploaded file '{file.display_name}' as: {file.uri}")
-        # The file object returned by genai.upload_file should already be "READY" or
-        # handle internal polling. Explicit polling is often not needed for simple upload.
-        # If issues arise, you might re-introduce the polling logic, but start simpler.
+
+        file_name = file.name
+        current_file_status = genai.get_file(file_name)
+
+        # Poll until the file is READY or ACTIVE (or a failed state)
+        max_wait_time = 30 # Maximum seconds to wait for file to be ready
+        start_time = time.time()
+
+        while current_file_status.state.name == "PROCESSING" and (time.time() - start_time) < max_wait_time:
+            print(f"File {current_file_status.display_name} is PROCESSING, waiting...", end="", flush=True)
+            time.sleep(2) # Wait 2 seconds between checks
+            current_file_status = genai.get_file(file_name)
         
-        # For robustness, we can add a basic check if the file object indicates state.
-        # However, genai.upload_file generally handles waiting for READY internally.
-        # If your version of genai.upload_file doesn't block, you might need this:
-        # while file.state.name == "PROCESSING":
-        #     print(".", end="", flush=True)
-        #     time.sleep(1)
-        #     file = genai.get_file(file.name) # Use genai.get_file directly
-        # if file.state.name == "READY":
-        #     print(f"\nFile {file.display_name} is READY.")
-        #     return file
-        # else:
-        #     raise Exception(f"File upload failed with state: {file.state.name}")
-        
-        return file # Return the file object directly
+        # Add an additional small sleep AFTER the file is reported READY/ACTIVE
+        if current_file_status.state.name in ["READY", "ACTIVE"]:
+            print(f"\nFile {current_file_status.display_name} is {current_file_status.state.name}. Giving a small extra pause.")
+            time.sleep(3) # Increased pause for propagation
+            return current_file_status
+        else:
+            raise Exception(f"File upload failed or timed out: File {current_file_status.display_name} is in unexpected state: {current_file_status.state.name} after {time.time() - start_time:.2f} seconds.")
 
     except Exception as e:
         print(f"Error uploading file {filepath}: {e}")
@@ -60,7 +59,6 @@ def delete_from_gemini(file_name: str):
     """Deletes a file from Gemini's Files API."""
     print(f"Deleting file {file_name} from Gemini Files API...")
     try:
-        # Use genai.delete_file directly
         genai.delete_file(name=file_name)
         print(f"File {file_name} deleted successfully.")
     except Exception as e:
@@ -79,7 +77,6 @@ def main():
 
     # --- Initialize Agents ---
     print("\nOrchestrator: Initializing agents...")
-    # REMOVE gemini_client from agent initialization as it's no longer a class
     policy_agent = PolicyAgent(server_url=SERVER_URL, gemini_model=GEMINI_MODEL, auth_token=auth_token)
     product_agent = ProductAgent(server_url=SERVER_URL, gemini_model=GEMINI_MODEL, auth_token=auth_token)
     synth_agent = SynthesisAgent(GEMINI_MODEL)
@@ -115,11 +112,14 @@ def main():
     print(f"Orchestrator: Extracted Policy ID: {full_policy_id_string}")
     print(f"Orchestrator: Extracted Target Coverage Element: \"{target_coverage_element}\"")
 
-    # --- Orchestration Logic ---
+    # --- Initialize variables before the try block ---
     policy_file_data = None
     product_file_data = None
     extracted_product_id = None
     is_coverage_element_covered = False
+    policy_filepath = None  # Initialize
+    product_filepath = None # Initialize
+    # --- End initialization ---
 
     try:
         # Step 1: Policy Agent - Get policy info, save, upload, and LLM extracts product ID
@@ -131,6 +131,11 @@ def main():
             with open(policy_filepath, 'w') as f:
                 json.dump(policy_response_json, f, indent=2)
             print(f"Orchestrator: Policy response saved to {policy_filepath}")
+            
+            # Uncomment below to print content during debugging
+            # print("\n--- Content of policy response JSON file ---")
+            # print(json.dumps(policy_response_json, indent=2))
+            # print("--------------------------------------------\n")
 
             policy_file_data = upload_to_gemini(policy_filepath, "application/json")
             
@@ -179,12 +184,13 @@ def main():
         print(final_answer)
 
     finally:
-        if 'policy_filepath' in locals() and os.path.exists(policy_filepath):
+        # --- Cleanup ---
+        if policy_filepath and os.path.exists(policy_filepath):
             os.remove(policy_filepath)
         if policy_file_data:
             delete_from_gemini(policy_file_data.name)
         
-        if 'product_filepath' in locals() and os.path.exists(product_filepath):
+        if product_filepath and os.path.exists(product_filepath):
             os.remove(product_filepath)
         if product_file_data:
             delete_from_gemini(product_file_data.name)
