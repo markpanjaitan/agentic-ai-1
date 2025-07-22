@@ -63,7 +63,8 @@ def main():
 
     # --- User Question ---
     # The comprehensive user question that drives the entire process
-    user_question = "Who is the best student in Calculus I? And what is the latest medical record the student?"
+    user_question = "Who is the best student in Calculus I? And what is the latest medical record of the student? Don't forget the sudent name"
+    # user_question = "Who is the worst student in History of Art? And what is the latest medical record of the student?"
     print(f"\nOrchestrator: User Question: \"{user_question}\"")
 
     # --- Orchestration Logic ---
