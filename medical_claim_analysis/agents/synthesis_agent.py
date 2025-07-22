@@ -5,7 +5,14 @@ from typing import Dict, Any, Optional
 
 class SynthesisAgent:
     def __init__(self, model_name: str = "gemini-1.5-flash"):
-        self.model = genai.GenerativeModel(model_name)
+        self.model = genai.GenerativeModel(
+            model_name,
+            generation_config={
+                "temperature": 0.3,
+                "max_output_tokens": 1000,
+                "top_p": 0.95
+            }
+        )
 
     def synthesize_answer(
         self,
@@ -17,42 +24,101 @@ class SynthesisAgent:
         target_coverage_element: str
     ) -> str:
         """
-        Synthesizes a final answer based on the user's question and the analysis results.
-        Now works directly with JSON data instead of file URIs.
+        Enhanced answer synthesis with:
+        - Structured response format
+        - Better context handling
+        - Error resilience
+        - Professional tone
         """
-        prompt_parts = [
-            "You are an intelligent assistant designed to answer questions about insurance policies and products.",
-            f"The user's question is: \"{user_question}\"",
-            "Here's what I know:\n"
-        ]
-
-        # Add policy information
-        if policy_data:
-            prompt_parts.append("Policy information:")
-            prompt_parts.append(json.dumps(policy_data, indent=2))
-        else:
-            prompt_parts.append("Policy information was not available or could not be processed.")
-
-        # Add product information
-        if product_data:
-            prompt_parts.append("\nProduct schema information:")
-            prompt_parts.append(json.dumps(product_data, indent=2))
-        else:
-            prompt_parts.append("\nProduct schema information was not available or could not be processed.")
-
-        # Add extracted information
-        prompt_parts.append(f"\nFrom the policy data, the Product ID was extracted as: {extracted_product_id if extracted_product_id else 'N/A'}")
-        prompt_parts.append(f"Regarding the question about whether the policy is covered by \"{target_coverage_element}\", "
-                          f"the analysis indicates: {'YES' if is_coverage_element_covered else 'NO'}")
-
-        # Final instructions
-        prompt_parts.append("\nBased on all the provided information, please provide a clear and concise answer to the user's original question. "
-                          f"State definitively whether the policy is covered by \"{target_coverage_element}\" and include "
-                          "the Policy ID and Product ID if successfully determined. Format your response for easy reading.")
-
-        print("SynthesisAgent: Generating final answer with LLM...")
         try:
-            response = self.model.generate_content("\n".join(prompt_parts), stream=False)
-            return response.text
+            # Prepare the structured prompt
+            prompt = self._build_prompt(
+                user_question,
+                policy_data,
+                product_data,
+                extracted_product_id,
+                is_coverage_element_covered,
+                target_coverage_element
+            )
+            
+            print("[SynthesisAgent] Generating final response...")
+            response = self.model.generate_content(prompt)
+            
+            if not response.text:
+                raise ValueError("Empty response from model")
+                
+            return self._format_response(response.text)
+            
         except Exception as e:
-            return f"An error occurred while synthesizing the answer: {str(e)}"
+            error_msg = f"[SynthesisAgent] Error: {str(e)}"
+            print(error_msg)
+            return self._build_error_response(user_question, error_msg)
+
+    def _build_prompt(
+        self,
+        user_question: str,
+        policy_data: Optional[Dict[str, Any]],
+        product_data: Optional[Dict[str, Any]],
+        product_id: Optional[str],
+        is_covered: bool,
+        coverage_element: str
+    ) -> str:
+        """Constructs a detailed, structured prompt for the LLM"""
+        return f"""
+        **Insurance Policy Analysis Task**
+
+        **User Question**: "{user_question}"
+
+        **Policy Details**:
+        {self._format_data(policy_data, "Policy")}
+
+        **Product Details**:
+        {self._format_data(product_data, "Product")}
+
+        **Key Findings**:
+        - Product ID: {product_id or "Not available"}
+        - Coverage for "{coverage_element}": {"Covered" if is_covered else "Not covered"}
+        
+        **Response Requirements**:
+        1. Address the user's question directly in the opening sentence
+        2. Provide a definitive yes/no answer about coverage
+        3. Include relevant policy and product identifiers
+        4. Explain the basis for your conclusion
+        5. Use professional but approachable language
+        6. Format with clear paragraphs and bullet points when helpful
+        
+        **Example Structure**:
+        "Based on our analysis of policy [ID] and product [ID], [coverage element] is [covered/not covered]. 
+        This determination was made because...[explanation]."
+        """
+
+    def _format_data(self, data: Optional[Dict[str, Any]], data_type: str) -> str:
+        """Formats JSON data for inclusion in prompt"""
+        if not data:
+            return f"{data_type} data not available"
+            
+        try:
+            return f"{data_type} Data:\n{json.dumps(data, indent=2)}"
+        except:
+            return f"{data_type} data (formatting error)"
+
+    def _format_response(self, raw_response: str) -> str:
+        """Ensures consistent response formatting"""
+        return f"""
+        === Coverage Determination ===
+        {raw_response.strip()}
+        
+        Note: This is an automated analysis. For official confirmation, 
+        please consult your policy documents or agent.
+        """
+
+    def _build_error_response(self, question: str, error: str) -> str:
+        """Creates user-friendly error messages"""
+        return f"""
+        We encountered an issue processing your question about:
+        "{question}"
+        
+        Error: {error}
+        
+        Please try again or contact support if the issue persists.
+        """
