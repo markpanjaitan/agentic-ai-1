@@ -1,53 +1,124 @@
 # agents/synthesis_agent.py
+import json
 import google.generativeai as genai
-from google.generativeai.protos import FileData
 from typing import Dict, Any, Optional
 
 class SynthesisAgent:
     def __init__(self, model_name: str = "gemini-1.5-flash"):
-        self.model = genai.GenerativeModel(model_name)
+        self.model = genai.GenerativeModel(
+            model_name,
+            generation_config={
+                "temperature": 0.3,
+                "max_output_tokens": 1000,
+                "top_p": 0.95
+            }
+        )
 
-    def synthesize_answer_with_files(
+    def synthesize_answer(
         self,
         user_question: str,
-        policy_file_uri: Optional[str],
-        product_file_uri: Optional[str],
+        policy_data: Optional[Dict[str, Any]],
+        product_data: Optional[Dict[str, Any]],
         extracted_product_id: Optional[str],
-        is_coverage_element_covered: bool, # Renamed variable
-        target_coverage_element: str # New parameter
+        is_coverage_element_covered: bool,
+        target_coverage_element: str
     ) -> str:
         """
-        Synthesizes a final answer based on the user's question and the results
-        derived from the file analysis by the LLM.
+        Enhanced answer synthesis with:
+        - Structured response format
+        - Better context handling
+        - Error resilience
+        - Professional tone
         """
-        parts = [
-            genai.protos.Part(text=f"You are an intelligent assistant designed to answer questions about insurance policies and products."),
-            genai.protos.Part(text=f"The user's question is: \"{user_question}\""),
-            genai.protos.Part(text=f"Here's what I know:\n")
-        ]
-
-        if policy_file_uri:
-            parts.append(genai.protos.Part(text=f"I have analyzed the policy information from the following file (policy_data.json):"))
-            parts.append(genai.protos.Part(file_data=genai.protos.FileData(file_uri=policy_file_uri, mime_type="application/json")))
-        else:
-            parts.append(genai.protos.Part(text="Policy information was not available or could not be processed."))
-
-        if product_file_uri:
-            parts.append(genai.protos.Part(text=f"\nI have analyzed the product schema information from the following file (product_schema.json):"))
-            parts.append(genai.protos.Part(file_data=genai.protos.FileData(file_uri=product_file_uri, mime_type="application/json")))
-        else:
-            parts.append(genai.protos.Part(text="Product schema information was not available or could not be processed."))
-
-        parts.append(genai.protos.Part(text=f"\nFrom the policy data, the Product ID was extracted as: {extracted_product_id if extracted_product_id else 'N/A'}"))
-        
-        # IMPORTANT: The prompt now uses the dynamic `target_coverage_element` and renamed boolean
-        parts.append(genai.protos.Part(text=f"Regarding the question about whether the policy is covered by \"{target_coverage_element}\", the analysis of the product schema indicates: {is_coverage_element_covered}"))
-
-        parts.append(genai.protos.Part(text=f"\nBased on all the provided information, please provide a clear and concise answer to the user's original question. State definitively whether the policy is covered by \"{target_coverage_element}\" and include the Policy ID and Product ID if successfully determined."))
-
-        print("SynthesisAgent: Generating final answer with LLM, referencing uploaded files...")
         try:
-            response = self.model.generate_content(parts, stream=False)
-            return response.text
+            # Prepare the structured prompt
+            prompt = self._build_prompt(
+                user_question,
+                policy_data,
+                product_data,
+                extracted_product_id,
+                is_coverage_element_covered,
+                target_coverage_element
+            )
+            
+            print("[SynthesisAgent] Generating final response...")
+            response = self.model.generate_content(prompt)
+            
+            if not response.text:
+                raise ValueError("Empty response from model")
+                
+            return self._format_response(response.text)
+            
         except Exception as e:
-            return f"SynthesisAgent: Error generating final answer: {e}"
+            error_msg = f"[SynthesisAgent] Error: {str(e)}"
+            print(error_msg)
+            return self._build_error_response(user_question, error_msg)
+
+    def _build_prompt(
+        self,
+        user_question: str,
+        policy_data: Optional[Dict[str, Any]],
+        product_data: Optional[Dict[str, Any]],
+        product_id: Optional[str],
+        is_covered: bool,
+        coverage_element: str
+    ) -> str:
+        """Constructs a detailed, structured prompt for the LLM"""
+        return f"""
+        **Insurance Policy Analysis Task**
+
+        **User Question**: "{user_question}"
+
+        **Policy Details**:
+        {self._format_data(policy_data, "Policy")}
+
+        **Product Details**:
+        {self._format_data(product_data, "Product")}
+
+        **Key Findings**:
+        - Product ID: {product_id or "Not available"}
+        - Coverage for "{coverage_element}": {"Covered" if is_covered else "Not covered"}
+        
+        **Response Requirements**:
+        1. Address the user's question directly in the opening sentence
+        2. Provide a definitive yes/no answer about coverage
+        3. Include relevant policy and product identifiers
+        4. Explain the basis for your conclusion
+        5. Use professional but approachable language
+        6. Format with clear paragraphs and bullet points when helpful
+        
+        **Example Structure**:
+        "Based on our analysis of policy [ID] and product [ID], [coverage element] is [covered/not covered]. 
+        This determination was made because...[explanation]."
+        """
+
+    def _format_data(self, data: Optional[Dict[str, Any]], data_type: str) -> str:
+        """Formats JSON data for inclusion in prompt"""
+        if not data:
+            return f"{data_type} data not available"
+            
+        try:
+            return f"{data_type} Data:\n{json.dumps(data, indent=2)}"
+        except:
+            return f"{data_type} data (formatting error)"
+
+    def _format_response(self, raw_response: str) -> str:
+        """Ensures consistent response formatting"""
+        return f"""
+        === Coverage Determination ===
+        {raw_response.strip()}
+        
+        Note: This is an automated analysis. For official confirmation, 
+        please consult your policy documents or agent.
+        """
+
+    def _build_error_response(self, question: str, error: str) -> str:
+        """Creates user-friendly error messages"""
+        return f"""
+        We encountered an issue processing your question about:
+        "{question}"
+        
+        Error: {error}
+        
+        Please try again or contact support if the issue persists.
+        """
